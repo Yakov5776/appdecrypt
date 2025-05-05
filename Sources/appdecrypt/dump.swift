@@ -119,12 +119,21 @@ class Dump {
         
         for (i, sourcePath) in needDumpFilePaths.enumerated() {
             let targetPath = dumpedFilePaths[i]
-            // Please see https://github.com/NyaMisty/fouldecrypt/issues/15#issuecomment-1722561492
+            consoleIO.writeMessage("Processing \(sourcePath)...")
+            
+            // Attempt to open the Mach-O file
             let handle = dlopen(sourcePath, RTLD_LAZY | RTLD_GLOBAL)
+            if handle == nil {
+                consoleIO.writeMessage("Error: Failed to load \(sourcePath) with dlopen. Skipping...", to: .error)
+                continue
+            }
+            
             Dump.mapFile(path: sourcePath, mutable: false) { base_size, base_descriptor, base_error, base_raw in
                 if let base = base_raw {
+                    consoleIO.writeMessage("Mapped \(sourcePath) successfully. Size: \(base_size)")
                     Dump.mapFile(path: targetPath, mutable: true) { dupe_size, dupe_descriptor, dupe_error, dupe_raw in
                         if let dupe = dupe_raw {
+                            consoleIO.writeMessage("Mapped \(targetPath) successfully. Size: \(dupe_size)")
                             if base_size == dupe_size {
                                 let header = UnsafeMutableRawPointer(mutating: dupe).assumingMemoryBound(to: mach_header_64.self)
                                 assert(header.pointee.magic == MH_MAGIC_64)
@@ -132,6 +141,7 @@ class Dump {
                                 assert(header.pointee.cpusubtype == CPU_SUBTYPE_ARM64_ALL)
                                 
                                 guard var curCmd = UnsafeMutablePointer<load_command>(bitPattern: UInt(bitPattern: header)+UInt(MemoryLayout<mach_header_64>.size)) else {
+                                    consoleIO.writeMessage("Error: Failed to parse load commands for \(sourcePath).", to: .error)
                                     return
                                 }
                                 
@@ -140,12 +150,13 @@ class Dump {
                                     segCmd = curCmd
                                     if segCmd.pointee.cmd == LC_ENCRYPTION_INFO_64 {
                                         let command = UnsafeMutableRawPointer(mutating: segCmd).assumingMemoryBound(to: encryption_info_command_64.self)
+                                        consoleIO.writeMessage("Found LC_ENCRYPTION_INFO_64 for \(sourcePath). cryptsize: \(command.pointee.cryptsize), cryptoff: \(command.pointee.cryptoff), cryptid: \(command.pointee.cryptid)")
                                         let result = Dump.dump(descriptor: base_descriptor, dupe: dupe, info: command.pointee)
                                         if result.0 {
                                             command.pointee.cryptid = 0
                                             consoleIO.writeMessage("Dump \(sourcePath) Success")
                                         } else {
-                                            consoleIO.writeMessage("Dump \(sourcePath) fail, because of \(result.1)")
+                                            consoleIO.writeMessage("Dump \(sourcePath) failed: \(result.1)", to: .error)
                                         }
                                         break
                                     }
@@ -159,18 +170,19 @@ class Dump {
                             } else {
                                 munmap(base, base_size)
                                 munmap(dupe, dupe_size)
-                                consoleIO.writeMessage("If the files are not of the same size, then they are not duplicates of each other, which is an error.", to: .error)
+                                consoleIO.writeMessage("Error: File sizes do not match for \(sourcePath) and \(targetPath).", to: .error)
                             }
                         } else {
                             munmap(base, base_size)
-                            consoleIO.writeMessage("Read \(targetPath) Fail with \(dupe_error)", to: .error)
+                            consoleIO.writeMessage("Error: Failed to read \(targetPath): \(dupe_error)", to: .error)
                         }
                     }
                 } else {
-                    consoleIO.writeMessage("Read \(sourcePath) Fail with \(base_error)", to: .error)
+                    consoleIO.writeMessage("Error: Failed to read \(sourcePath): \(base_error)", to: .error)
                 }
             }
             dlclose(handle)
+            consoleIO.writeMessage("Finished processing \(sourcePath).")
         }
     }
     
@@ -178,9 +190,11 @@ class Dump {
         // https://github.com/Qcloud1223/COMP461905/issues/2#issuecomment-987510518
         // Align the offset based on the page size
         // See: https://man7.org/linux/man-pages/man2/mmap.2.html
+        consoleIO.writeMessage("Starting decryption. cryptsize: \(info.cryptsize), cryptoff: \(info.cryptoff), cryptid: \(info.cryptid)")
         let pageSize = Float(sysconf(_SC_PAGESIZE))
         let multiplier = ceil(Float(info.cryptoff) / pageSize)
         let alignedOffset = Int(multiplier * pageSize)
+        consoleIO.writeMessage("Aligned offset: \(alignedOffset)")
 
         let cryptsize = Int(info.cryptsize)
         let cryptoff = Int(info.cryptoff)
@@ -192,14 +206,17 @@ class Dump {
         if base == MAP_FAILED {
             return (false, "mmap fail with \(String(cString: strerror(errno)))")
         }
+        consoleIO.writeMessage("Memory mapped successfully for decryption.")
         let error = mremap_encrypted(base!, cryptsize, info.cryptid, UInt32(CPU_TYPE_ARM64), UInt32(CPU_SUBTYPE_ARM64_ALL))
         if error != 0 {
             munmap(base, cryptsize)
-            return (false, "encrypted fail with \(String(cString: strerror(errno)))")
+            return (false, "mremap_encrypted failed with \(String(cString: strerror(errno)))")
         }
+        consoleIO.writeMessage("Decryption completed successfully.")
 
         // alignment needs to be adjusted, memmove will have bus error if not aligned
         if alignedOffset - cryptoff > cryptsize  {
+            consoleIO.writeMessage("Adjusting alignment for memmove.")
             posix_memalign(&base, cryptsize, cryptsize)
             memmove(dupe+UnsafeMutableRawPointer.Stride(info.cryptoff), base, cryptsize)
             free(base)
@@ -207,6 +224,7 @@ class Dump {
             memmove(dupe+UnsafeMutableRawPointer.Stride(info.cryptoff), base, cryptsize)
             munmap(base, cryptsize)
         }
+        consoleIO.writeMessage("Decrypted data moved successfully.")
         return (true, "")
     }
     
