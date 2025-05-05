@@ -151,7 +151,7 @@ class Dump {
                                     if segCmd.pointee.cmd == LC_ENCRYPTION_INFO_64 {
                                         let command = UnsafeMutableRawPointer(mutating: segCmd).assumingMemoryBound(to: encryption_info_command_64.self)
                                         consoleIO.writeMessage("Found LC_ENCRYPTION_INFO_64 for \(sourcePath). cryptsize: \(command.pointee.cryptsize), cryptoff: \(command.pointee.cryptoff), cryptid: \(command.pointee.cryptid)")
-                                        let result = Dump.dump(descriptor: base_descriptor, dupe: dupe, info: command.pointee)
+                                        let result = Dump.dump(descriptor: base_descriptor, dupe: dupe, info: command.pointee, consoleIO: consoleIO)
                                         if result.0 {
                                             command.pointee.cryptid = 0
                                             consoleIO.writeMessage("Dump \(sourcePath) Success")
@@ -186,10 +186,7 @@ class Dump {
         }
     }
     
-    static func dump(descriptor: Int32, dupe: UnsafeMutableRawPointer, info: encryption_info_command_64) -> (Bool, String) {
-        // https://github.com/Qcloud1223/COMP461905/issues/2#issuecomment-987510518
-        // Align the offset based on the page size
-        // See: https://man7.org/linux/man-pages/man2/mmap.2.html
+    static func dump(descriptor: Int32, dupe: UnsafeMutableRawPointer, info: encryption_info_command_64, consoleIO: ConsoleIO) -> (Bool, String) {
         consoleIO.writeMessage("Starting decryption. cryptsize: \(info.cryptsize), cryptoff: \(info.cryptoff), cryptid: \(info.cryptid)")
         let pageSize = Float(sysconf(_SC_PAGESIZE))
         let multiplier = ceil(Float(info.cryptoff) / pageSize)
