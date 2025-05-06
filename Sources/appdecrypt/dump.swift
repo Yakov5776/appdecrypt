@@ -120,7 +120,7 @@ class Dump {
         for (i, sourcePath) in needDumpFilePaths.enumerated() {
             let targetPath = dumpedFilePaths[i]
             consoleIO.writeMessage("Processing \(sourcePath)...")
-            
+
             // Attempt to open the Mach-O file
             let handle = dlopen(sourcePath, RTLD_LAZY | RTLD_GLOBAL)
             if handle == nil {
@@ -356,7 +356,7 @@ class Dump {
                     return false
                 }
                 
-                versionCommand.cmd = LC_VERSION_MIN_MACOSX
+                versionCommand.cmd = UInt32(LC_VERSION_MIN_MACOSX) // Explicitly cast to UInt32
                 lseek(fd, off_t(offset), SEEK_SET)
                 if write(fd, &versionCommand, MemoryLayout<version_min_command>.size) != MemoryLayout<version_min_command>.size {
                     print("Error: Failed to write patched LC_VERSION_MIN_MACOSX command to \(path).")
