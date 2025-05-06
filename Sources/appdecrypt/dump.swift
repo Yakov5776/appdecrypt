@@ -154,10 +154,43 @@ class Dump {
                                 dlclose(retryHandle)
                             }
                         } else {
-                            consoleIO.writeMessage("Failed to remove code signature for \(sourcePath). Skipping...", to: .error)
+                            consoleIO.writeMessage("Failed to remove code signature for \(sourcePath). Ensure you have sufficient permissions or check SIP settings. Skipping...", to: .error)
                         }
                     } else if errorMessage.contains("not built for platform macOS") {
-                        consoleIO.writeMessage("Skipping \(sourcePath) as it is not built for macOS.", to: .error)
+                        consoleIO.writeMessage("Patching Mach-O header for \(sourcePath) to change platform to macOS...")
+                        let success = Dump.patchMachOHeader(path: sourcePath)
+                        if success {
+                            consoleIO.writeMessage("Successfully patched Mach-O header for \(sourcePath). Retrying dlopen...")
+                            let retryHandle = dlopen(sourcePath, RTLD_LAZY | RTLD_GLOBAL)
+                            if retryHandle == nil {
+                                if let retryError = dlerror() {
+                                    consoleIO.writeMessage("Retry failed: \(String(cString: retryError))", to: .error)
+                                } else {
+                                    consoleIO.writeMessage("Retry failed: Unknown reason.", to: .error)
+                                }
+                            } else {
+                                consoleIO.writeMessage("Retry succeeded for \(sourcePath).")
+                                dlclose(retryHandle)
+                            }
+                        } else {
+                            consoleIO.writeMessage("Failed to patch Mach-O header for \(sourcePath). Skipping...", to: .error)
+                        }
+                    } else if errorMessage.contains("Trying to load an unsigned library") {
+                        consoleIO.writeMessage("Attempting to execute \(sourcePath) as a separate process...")
+                        let execTask = Process()
+                        execTask.launchPath = sourcePath
+                        execTask.arguments = []
+                        let execPipe = Pipe()
+                        execTask.standardOutput = execPipe
+                        execTask.standardError = execPipe
+                        execTask.launch()
+                        execTask.waitUntilExit()
+                        
+                        if execTask.terminationStatus == 0 {
+                            consoleIO.writeMessage("Successfully executed \(sourcePath) as a separate process.")
+                        } else {
+                            consoleIO.writeMessage("Failed to execute \(sourcePath) as a separate process. Skipping...", to: .error)
+                        }
                     }
                 } else {
                     consoleIO.writeMessage("Error: Failed to load \(sourcePath) with dlopen. Unknown reason.", to: .error)
@@ -286,5 +319,59 @@ class Dump {
         handle(Int(s.st_size), f, "", base)
     }
     
+    static func patchMachOHeader(path: String) -> Bool {
+        let fd = open(path, O_RDWR)
+        if fd < 0 {
+            print("Error: Failed to open \(path) for patching. Reason: \(String(cString: strerror(errno)))")
+            return false
+        }
+        
+        defer { close(fd) }
+        
+        var header = mach_header_64()
+        if read(fd, &header, MemoryLayout<mach_header_64>.size) != MemoryLayout<mach_header_64>.size {
+            print("Error: Failed to read Mach-O header from \(path).")
+            return false
+        }
+        
+        guard header.magic == MH_MAGIC_64 else {
+            print("Error: Unsupported Mach-O magic number in \(path).")
+            return false
+        }
+        
+        var offset = MemoryLayout<mach_header_64>.size
+        for _ in 0..<header.ncmds {
+            var loadCommand = load_command()
+            lseek(fd, off_t(offset), SEEK_SET)
+            if read(fd, &loadCommand, MemoryLayout<load_command>.size) != MemoryLayout<load_command>.size {
+                print("Error: Failed to read load command from \(path).")
+                return false
+            }
+            
+            if loadCommand.cmd == LC_VERSION_MIN_IPHONEOS {
+                var versionCommand = version_min_command()
+                lseek(fd, off_t(offset), SEEK_SET)
+                if read(fd, &versionCommand, MemoryLayout<version_min_command>.size) != MemoryLayout<version_min_command>.size {
+                    print("Error: Failed to read LC_VERSION_MIN_IPHONEOS command from \(path).")
+                    return false
+                }
+                
+                versionCommand.cmd = LC_VERSION_MIN_MACOSX
+                lseek(fd, off_t(offset), SEEK_SET)
+                if write(fd, &versionCommand, MemoryLayout<version_min_command>.size) != MemoryLayout<version_min_command>.size {
+                    print("Error: Failed to write patched LC_VERSION_MIN_MACOSX command to \(path).")
+                    return false
+                }
+                
+                print("Successfully patched LC_VERSION_MIN_IPHONEOS to LC_VERSION_MIN_MACOSX in \(path).")
+                return true
+            }
+            
+            offset += Int(loadCommand.cmdsize)
+        }
+        
+        print("Error: LC_VERSION_MIN_IPHONEOS not found in \(path).")
+        return false
+    }
 }
 
