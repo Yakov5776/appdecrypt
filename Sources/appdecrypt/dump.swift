@@ -125,7 +125,40 @@ class Dump {
             let handle = dlopen(sourcePath, RTLD_LAZY | RTLD_GLOBAL)
             if handle == nil {
                 if let error = dlerror() {
-                    consoleIO.writeMessage("Error: Failed to load \(sourcePath) with dlopen. Reason: \(String(cString: error))", to: .error)
+                    let errorMessage = String(cString: error)
+                    consoleIO.writeMessage("Error: Failed to load \(sourcePath) with dlopen. Reason: \(errorMessage)", to: .error)
+                    
+                    // Check for specific errors and handle them
+                    if errorMessage.contains("code signature invalid") {
+                        consoleIO.writeMessage("Attempting to remove code signature for \(sourcePath)...")
+                        let task = Process()
+                        task.launchPath = "/usr/bin/codesign"
+                        task.arguments = ["--remove-signature", sourcePath]
+                        let pipe = Pipe()
+                        task.standardOutput = pipe
+                        task.standardError = pipe
+                        task.launch()
+                        task.waitUntilExit()
+                        
+                        if task.terminationStatus == 0 {
+                            consoleIO.writeMessage("Successfully removed code signature for \(sourcePath). Retrying dlopen...")
+                            let retryHandle = dlopen(sourcePath, RTLD_LAZY | RTLD_GLOBAL)
+                            if retryHandle == nil {
+                                if let retryError = dlerror() {
+                                    consoleIO.writeMessage("Retry failed: \(String(cString: retryError))", to: .error)
+                                } else {
+                                    consoleIO.writeMessage("Retry failed: Unknown reason.", to: .error)
+                                }
+                            } else {
+                                consoleIO.writeMessage("Retry succeeded for \(sourcePath).")
+                                dlclose(retryHandle)
+                            }
+                        } else {
+                            consoleIO.writeMessage("Failed to remove code signature for \(sourcePath). Skipping...", to: .error)
+                        }
+                    } else if errorMessage.contains("not built for platform macOS") {
+                        consoleIO.writeMessage("Skipping \(sourcePath) as it is not built for macOS.", to: .error)
+                    }
                 } else {
                     consoleIO.writeMessage("Error: Failed to load \(sourcePath) with dlopen. Unknown reason.", to: .error)
                 }
