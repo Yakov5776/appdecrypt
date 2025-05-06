@@ -124,7 +124,11 @@ class Dump {
             // Attempt to open the Mach-O file
             let handle = dlopen(sourcePath, RTLD_LAZY | RTLD_GLOBAL)
             if handle == nil {
-                consoleIO.writeMessage("Error: Failed to load \(sourcePath) with dlopen. Skipping...", to: .error)
+                if let error = dlerror() {
+                    consoleIO.writeMessage("Error: Failed to load \(sourcePath) with dlopen. Reason: \(String(cString: error))", to: .error)
+                } else {
+                    consoleIO.writeMessage("Error: Failed to load \(sourcePath) with dlopen. Unknown reason.", to: .error)
+                }
                 continue
             }
             
